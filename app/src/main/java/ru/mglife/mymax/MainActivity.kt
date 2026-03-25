@@ -3,15 +3,18 @@ package ru.mglife.mymax
 import android.content.Intent
 import android.os.Bundle
 import android.widget.EditText
+import android.widget.Toast
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.recyclerview.widget.LinearLayoutManager
+import com.google.android.material.tabs.TabLayout
 import ru.mglife.mymax.databinding.ActivityMainBinding
 
 class MainActivity : AppCompatActivity() {
 
     private lateinit var binding: ActivityMainBinding
-    private val chatList = mutableListOf<Chat>()
+    private val allChats = mutableListOf<Chat>()
+    private val filteredChats = mutableListOf<Chat>()
     private lateinit var adapter: ChatAdapter
     private lateinit var mls: MLSManager
     private lateinit var storage: StorageManager
@@ -25,40 +28,85 @@ class MainActivity : AppCompatActivity() {
         storage = StorageManager(this, mls)
 
         setupRecyclerView()
+        setupFilters()
+        setupBottomNavigation()
         loadChats()
 
         binding.fabAddChat.setOnClickListener {
             showAddChatDialog()
         }
+        
+        binding.buttonSearch.setOnClickListener {
+            Toast.makeText(this, "Поиск пока не реализован", Toast.LENGTH_SHORT).show()
+        }
     }
 
     private fun setupRecyclerView() {
-        adapter = ChatAdapter(chatList) { chat ->
+        adapter = ChatAdapter(filteredChats) { chat ->
             openChat(chat)
         }
         binding.recyclerViewChats.layoutManager = LinearLayoutManager(this)
         binding.recyclerViewChats.adapter = adapter
     }
 
-    private fun loadChats() {
-        val state = storage.load()
-        chatList.clear()
-        if (state != null) {
-            chatList.addAll(state.chats)
-        }
-        // Если чатов совсем нет, добавим тестовый
-        if (chatList.isEmpty()) {
-            val defaultChat = Chat("chat_default", "Общий чат", true)
-            chatList.add(defaultChat)
-            storage.save(ChatState(chatList))
+    private fun setupFilters() {
+        binding.tabLayoutFilters.addOnTabSelectedListener(object : TabLayout.OnTabSelectedListener {
+            override fun onTabSelected(tab: TabLayout.Tab?) {
+                applyFilter(tab?.position ?: 0)
+            }
+            override fun onTabUnselected(tab: TabLayout.Tab?) {}
+            override fun onTabReselected(tab: TabLayout.Tab?) {}
+        })
+    }
+
+    private fun applyFilter(position: Int) {
+        filteredChats.clear()
+        when (position) {
+            0 -> filteredChats.addAll(allChats) // Все
+            1 -> filteredChats.addAll(allChats.filter { it.isGroup }) // Группы
+            2 -> filteredChats.addAll(allChats.filter { !it.isGroup }) // Личные (P2P)
         }
         adapter.notifyDataSetChanged()
+    }
+
+    private fun setupBottomNavigation() {
+        binding.bottomNavigation.setOnItemSelectedListener { item ->
+            when (item.itemId) {
+                R.id.nav_chats -> true
+                R.id.nav_contacts -> {
+                    Toast.makeText(this, "Контакты (заглушка)", Toast.LENGTH_SHORT).show()
+                    false
+                }
+                R.id.nav_settings -> {
+                    Toast.makeText(this, "Настройки (заглушка)", Toast.LENGTH_SHORT).show()
+                    false
+                }
+                R.id.nav_profile -> {
+                    Toast.makeText(this, "Профиль (заглушка)", Toast.LENGTH_SHORT).show()
+                    false
+                }
+                else -> false
+            }
+        }
+    }
+
+    private fun loadChats() {
+        val state = storage.load()
+        allChats.clear()
+        if (state != null) {
+            allChats.addAll(state.chats)
+        }
+        if (allChats.isEmpty()) {
+            val defaultChat = Chat("chat_default", "Общий чат", true)
+            allChats.add(defaultChat)
+            storage.save(ChatState(allChats))
+        }
+        applyFilter(binding.tabLayoutFilters.selectedTabPosition)
     }
 
     private fun showAddChatDialog() {
         val builder = AlertDialog.Builder(this)
         builder.setTitle("Добавить чат")
-        
         val input = EditText(this)
         input.hint = "Имя контакта или группы"
         builder.setView(input)
@@ -77,9 +125,9 @@ class MainActivity : AppCompatActivity() {
         if (name.isEmpty()) return
         val id = "chat_${System.currentTimeMillis()}"
         val newChat = Chat(id, name, isGroup)
-        chatList.add(newChat)
-        storage.save(ChatState(chatList))
-        adapter.notifyItemInserted(chatList.size - 1)
+        allChats.add(newChat)
+        storage.save(ChatState(allChats))
+        loadChats() // Перезагружаем с фильтром
         openChat(newChat)
     }
 
@@ -91,6 +139,6 @@ class MainActivity : AppCompatActivity() {
 
     override fun onResume() {
         super.onResume()
-        loadChats() // Обновляем список, чтобы видеть последние сообщения
+        loadChats()
     }
 }
