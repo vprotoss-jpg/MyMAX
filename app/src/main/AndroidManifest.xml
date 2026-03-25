@@ -30,6 +30,12 @@
             android:label="Сообщения"
             android:parentActivityName=".MainActivity" />
 
+        <activity
+            android:name=".SettingsActivity"
+            android:exported="false"
+            android:label="Настройки"
+            android:parentActivityName=".MainActivity" />
+
     </application>
 
 </manifest>

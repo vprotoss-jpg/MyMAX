@@ -18,6 +18,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var adapter: ChatAdapter
     private lateinit var mls: MLSManager
     private lateinit var storage: StorageManager
+    private val crypto = CryptoManager()
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -25,7 +26,7 @@ class MainActivity : AppCompatActivity() {
         setContentView(binding.root)
 
         mls = MLSManager(this)
-        storage = StorageManager(this, mls)
+        storage = StorageManager(this, mls, crypto)
 
         setupRecyclerView()
         setupFilters()
@@ -62,9 +63,9 @@ class MainActivity : AppCompatActivity() {
     private fun applyFilter(position: Int) {
         filteredChats.clear()
         when (position) {
-            0 -> filteredChats.addAll(allChats) // Все
-            1 -> filteredChats.addAll(allChats.filter { it.isGroup }) // Группы
-            2 -> filteredChats.addAll(allChats.filter { !it.isGroup }) // Личные (P2P)
+            0 -> filteredChats.addAll(allChats)
+            1 -> filteredChats.addAll(allChats.filter { it.isGroup })
+            2 -> filteredChats.addAll(allChats.filter { !it.isGroup })
         }
         adapter.notifyDataSetChanged()
     }
@@ -78,7 +79,8 @@ class MainActivity : AppCompatActivity() {
                     false
                 }
                 R.id.nav_settings -> {
-                    Toast.makeText(this, "Настройки (заглушка)", Toast.LENGTH_SHORT).show()
+                    // РЕАЛЬНЫЙ ПЕРЕХОД В НАСТРОЙКИ
+                    startActivity(Intent(this, SettingsActivity::class.java))
                     false
                 }
                 R.id.nav_profile -> {
@@ -127,7 +129,7 @@ class MainActivity : AppCompatActivity() {
         val newChat = Chat(id, name, isGroup)
         allChats.add(newChat)
         storage.save(ChatState(allChats))
-        loadChats() // Перезагружаем с фильтром
+        loadChats()
         openChat(newChat)
     }
 

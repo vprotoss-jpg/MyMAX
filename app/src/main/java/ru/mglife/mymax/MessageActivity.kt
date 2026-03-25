@@ -19,6 +19,7 @@ class MessageActivity : AppCompatActivity() {
     private lateinit var mls: MLSManager
     private lateinit var storage: StorageManager
     private lateinit var adapter: MessageAdapter
+    private val crypto = CryptoManager()
     
     private var currentChat: Chat? = null
 
@@ -32,7 +33,7 @@ class MessageActivity : AppCompatActivity() {
         supportActionBar?.setDisplayHomeAsUpEnabled(true)
 
         mls = MLSManager(this)
-        storage = StorageManager(this, mls)
+        storage = StorageManager(this, mls, crypto)
 
         val chatId = intent.getStringExtra("CHAT_ID")
         loadChat(chatId)

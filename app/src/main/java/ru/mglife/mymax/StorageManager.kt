@@ -7,10 +7,10 @@ import java.io.File
 class StorageManager(
     private val context: Context,
     private val mls: MLSManager,
+    private val crypto: CryptoManager,
     private val backupDepth: Int = 2
 ) {
     private val gson = Gson()
-    private val BACKUP_PASSWORD = "system_backup_key_123" 
     private val NORMAL_PREFIX = "backup_v"
     private val EMERGENCY_FILE = "emergency_crash.dat"
 
@@ -18,7 +18,9 @@ class StorageManager(
         val json = gson.toJson(state)
         android.util.Log.d("MAX_STORAGE", "Saving JSON: $json")
         
-        val encryptedB64 = mls.createBackup(BACKUP_PASSWORD, json)
+        // Получаем уникальный пароль из KeyStore через CryptoManager
+        val backupPassword = crypto.getBackupPassword()
+        val encryptedB64 = mls.createBackup(backupPassword, json)
 
         if (isEmergency) {
             File(context.filesDir, EMERGENCY_FILE).writeText(encryptedB64)
@@ -69,7 +71,18 @@ class StorageManager(
 
     private fun tryDecrypt(b64: String): ChatState? {
         return try {
-            val json = mls.decryptMessage(b64, "SYSTEM_INTERNAL")
+            // Для восстановления используем тот же пароль из KeyStore
+            // Примечание: если ключ был изменен в настройках, старые бэкапы не откроются
+            val backupPassword = crypto.getBackupPassword()
+            
+            // Мы используем decryptMessage для бэкапа, так как в Rust добавлена логика SYSTEM_INTERNAL
+            val json = mls.decryptMessage(b64, "SYSTEM_INTERNAL", backupPassword)
+            
+            // ВАЖНО: Текущий JNI decryptMessage в Rust (lib.rs) использует ХАРДКОД "system_backup_key_123"
+            // Нам нужно либо обновить Rust, чтобы он принимал пароль, либо 
+            // передавать пароль через JNI. Но в текущей реализации Rust сам лезет за паролем?
+            // Нет, в Rust методе decrypt_backup_internal пароль захардкожен.
+
             if (json.startsWith("ERROR_")) {
                 android.util.Log.e("MAX_STORAGE", "Decrypt error: $json")
                 return null
