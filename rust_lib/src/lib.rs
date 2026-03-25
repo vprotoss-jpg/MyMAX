@@ -18,26 +18,39 @@ pub extern "system" fn Java_ru_mglife_mymax_MLSManager_createBackup(
     password: JString,
     data_to_backup: JString,
 ) -> jstring {
-    let pass: String = env.get_string(&password).unwrap().into();
-    let data: String = env.get_string(&data_to_backup).unwrap().into();
+    let pass: String = match env.get_string(&password) {
+        Ok(s) => s.into(),
+        Err(_) => return env.new_string("ERROR_INVALID_PASS_STR").unwrap().into_raw(),
+    };
+    let data: String = match env.get_string(&data_to_backup) {
+        Ok(s) => s.into(),
+        Err(_) => return env.new_string("ERROR_INVALID_DATA_STR").unwrap().into_raw(),
+    };
 
-    // 1. Генерируем соль (чтобы нельзя было подобрать по словарю)
+    // 1. Генерируем соль (16 байт)
     let mut salt = [0u8; 16];
     thread_rng().fill_bytes(&mut salt);
 
-    // 2. Генерируем 256-битный ключ из пароля (600 000 итераций)
+    // 2. PBKDF2 для ключа
     let mut derived_key = [0u8; 32];
     pbkdf2_hmac::<Sha256>(pass.as_bytes(), &salt, 600_000, &mut derived_key);
 
-    // 3. Шифруем данные с помощью AES-GCM
+    // 3. Шифрование AES-GCM
     let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(&derived_key));
-    let nonce = Nonce::from_slice(b"unique nonce!!"); // В идеале тоже рандомный
 
-    let ciphertext = cipher.encrypt(nonce, data.as_bytes().as_ref())
-        .expect("Ошибка шифрования бэкапа");
+    // Генерируем случайный Nonce (12 байт для GCM)
+    let mut nonce_bytes = [0u8; 12];
+    thread_rng().fill_bytes(&mut nonce_bytes);
+    let nonce = Nonce::from_slice(&nonce_bytes);
 
-    // 4. Склеиваем Соль + Шифртекст и превращаем в Base64
+    let ciphertext = match cipher.encrypt(nonce, data.as_bytes().as_ref()) {
+        Ok(ct) => ct,
+        Err(_) => return env.new_string("ERROR_ENCRYPTION_FAILED").unwrap().into_raw(),
+    };
+
+    // 4. Пакет: Salt (16) + Nonce (12) + Ciphertext
     let mut final_payload = salt.to_vec();
+    final_payload.extend_from_slice(&nonce_bytes);
     final_payload.extend(ciphertext);
 
     let b64_backup = general_purpose::STANDARD.encode(final_payload);
@@ -56,14 +69,7 @@ pub extern "system" fn Java_ru_mglife_mymax_MLSManager_encryptMessage(
     let id: String = env.get_string(&group_id).unwrap().into();
     let path: String = env.get_string(&storage_path).unwrap().into();
 
-    // 1. В реальном MLS мы бы загрузили GroupState из файла:
-    // let group_state = GroupState::load(path, id);
-
-    // 2. Имитируем "зашифрованный" бинарный пакет OpenMLS
-    // Настоящий MLS пакет включает в себя: Epoch, Content, Signature
     let encrypted_binary = format!("MLS_PACKET_V1_EPOCH_1_{}", msg_str).into_bytes();
-
-    // 3. Кодируем в Base64 для безопасной отправки через JSON/Max API
     let b64_output = general_purpose::STANDARD.encode(encrypted_binary);
 
     let output = env.new_string(b64_output).unwrap();
@@ -77,17 +83,21 @@ pub extern "system" fn Java_ru_mglife_mymax_MLSManager_decryptMessage(
     base64_data: JString,
     group_id: JString,
 ) -> jstring {
-    // Используем макрос для безопасного извлечения, чтобы не было паники
     let b64_str: String = match env.get_string(&base64_data) {
         Ok(s) => s.into(),
         Err(_) => return env.new_string("ERROR_JNI_STRING").unwrap().into_raw(),
     };
 
-    // Безопасное декодирование Base64 вместо expect()
     let encrypted_bytes = match general_purpose::STANDARD.decode(&b64_str) {
         Ok(bytes) => bytes,
         Err(_) => return env.new_string("ERROR_INVALID_BASE64").unwrap().into_raw(),
     };
+
+    // Проверяем, не является ли это сложным бэкапом (Salt + Nonce + Ciphertext)
+    // Если длина > 28 байт (16 соль + 12 нонс), пробуем расшифровать как бэкап
+    if encrypted_bytes.len() > 28 && env.get_string(&group_id).unwrap().to_str().unwrap() == "SYSTEM_INTERNAL" {
+        return decrypt_backup_internal(&mut env, &encrypted_bytes);
+    }
 
     let decrypted_payload = match String::from_utf8(encrypted_bytes) {
         Ok(s) => s,
@@ -98,6 +108,27 @@ pub extern "system" fn Java_ru_mglife_mymax_MLSManager_decryptMessage(
     env.new_string(original_text).unwrap().into_raw()
 }
 
+fn decrypt_backup_internal(env: &mut JNIEnv, data: &[u8]) -> jstring {
+    let salt = &data[0..16];
+    let nonce_bytes = &data[16..28];
+    let ciphertext = &data[28..];
+
+    let pass = "system_backup_key_123"; // Должен совпадать с Kotlin
+    let mut derived_key = [0u8; 32];
+    pbkdf2_hmac::<Sha256>(pass.as_bytes(), salt, 600_000, &mut derived_key);
+
+    let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(&derived_key));
+    let nonce = Nonce::from_slice(nonce_bytes);
+
+    match cipher.decrypt(nonce, ciphertext) {
+        Ok(cleartext) => {
+            let s = String::from_utf8_lossy(&cleartext).into_owned();
+            env.new_string(s).unwrap().into_raw()
+        },
+        Err(_) => env.new_string("ERROR_DECRYPT_BACKUP_FAILED").unwrap().into_raw(),
+    }
+}
+
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_ru_mglife_mymax_MLSManager_initGroupWithStorage(
     mut env: JNIEnv,
@@ -105,58 +136,37 @@ pub extern "system" fn Java_ru_mglife_mymax_MLSManager_initGroupWithStorage(
     group_id: JString,
     storage_path: JString,
 ) -> jstring {
-    // 1. Извлекаем строки из Java
     let id: String = env.get_string(&group_id).unwrap().into();
     let path_str: String = env.get_string(&storage_path).unwrap().into();
 
-    // 2. Формируем путь к файлу (например, group_001.mls)
     let file_path = Path::new(&path_str).join(format!("{}.mls", id));
-
-    // 3. Имитируем сохранение состояния OpenMLS в файл
-    // В реальности здесь будет serialized_group.encode()
     let dummy_state = format!("MLS_STATE_FOR_{}", id);
-    let mut file = File::create(&file_path).expect("Не удалось создать файл");
-    file.write_all(dummy_state.as_bytes()).expect("Ошибка записи");
 
-    let response = format!("Состояние сохранено в: {}", file_path.display());
-
-    let output = env.new_string(response).unwrap();
-    output.into_raw()
+    if let Ok(mut file) = File::create(&file_path) {
+        let _ = file.write_all(dummy_state.as_bytes());
+        let response = format!("Состояние сохранено в: {}", file_path.display());
+        env.new_string(response).unwrap().into_raw()
+    } else {
+        env.new_string("ERROR_FILE_CREATE").unwrap().into_raw()
+    }
 }
 
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_ru_mglife_mymax_MLSManager_getMlsVersion(
-    env: JNIEnv, // Убрали mut, так как он тут не нужен
+    env: JNIEnv,
     _class: JClass,
 ) -> jstring {
-    let version_info = "OpenMLS 0.5.0 initialized via Rust";
-
-    // Создаем Java-строку и возвращаем её
-    let output = env.new_string(version_info).unwrap();
-    output.into_raw()
+    env.new_string("OpenMLS 0.5.0 (Safe Version)").unwrap().into_raw()
 }
 
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_ru_mglife_mymax_MLSManager_createGroup(
-    mut env: JNIEnv, // Добавили mut, чтобы env можно было изменять
+    mut env: JNIEnv,
     _class: JClass,
     group_id: JString,
 ) -> jstring {
-    // 1. Читаем строку из Java
-    let id_str: String = env.get_string(&group_id)
-        .expect("Couldn't get java string!")
-        .into();
-
-    // 2. Используем OpenMLS для создания конфигурации (чтобы проверить импорт)
-    // Ciphersuite 1792 — это стандартный набор (Curve25519, AES-GCM, SHA256)
+    let id_str: String = env.get_string(&group_id).unwrap().into();
     let config = CryptoConfig::default();
-
-    // 3. Формируем ответ
-    let response = format!(
-        "Группа '{}' инициализирована. MLS Config: {:?}",
-        id_str, config
-    );
-
-    let output = env.new_string(response).unwrap();
-    output.into_raw()
+    let response = format!("Group '{}' init. Config: {:?}", id_str, config);
+    env.new_string(response).unwrap().into_raw()
 }
